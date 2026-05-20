@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-START_PHASE=1
+START_PHASE=0
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -17,13 +17,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Usage: $0 [--from PHASE]"
-            echo "  --from PHASE  Start from phase 1-9 (default: 1)"
+            echo "  --from PHASE  Start from phase 0-9 (default: 0)"
             exit 1
             ;;
     esac
 done
 
 PHASES=(
+    "00-generate-passwords.sh:Phase 0 - Generate Passwords (Bitwarden)"
     "01-factory-reset.sh:Phase 1 - Factory Reset"
     "02-wrap-key.sh:Phase 2 - Shared Wrap Key"
     "03-auth-keys.sh:Phase 3 - Auth Keys"
@@ -44,9 +45,12 @@ echo "Secureboot and code signing operations."
 echo
 echo "Phases to run: $START_PHASE through 9"
 echo
+echo "Phase 0 generates passwords and stores in Bitwarden."
+echo "Phases 3-8 will auto-retrieve passwords from Bitwarden if BW_SESSION is set."
+echo
 
 for i in "${!PHASES[@]}"; do
-    phase_num=$((i + 1))
+    phase_num=$i
     IFS=':' read -r script desc <<< "${PHASES[$i]}"
 
     if [[ $phase_num -lt $START_PHASE ]]; then
@@ -64,7 +68,7 @@ for i in "${!PHASES[@]}"; do
     echo ">>> Completed: $desc"
 
     # Pause between phases for user review (except after last phase)
-    if [[ $phase_num -lt 9 ]]; then
+    if [[ $phase_num -lt $((${#PHASES[@]} - 1)) ]]; then
         echo
         read -rp "Press Enter to continue to next phase, or Ctrl+C to stop... "
     fi

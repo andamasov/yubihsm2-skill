@@ -4,12 +4,12 @@ source "$(dirname "$0")/common.sh"
 
 preflight
 
-section "Phase 6: Export All Objects from HSM-1"
+section "Phase 6: Export All Objects from $PRIMARY_NAME"
 
-check_connector "$HSM1"
+check_connector "$PRIMARY_HSM"
 
-# Prompt for HSM-1 admin password
-prompt_password "HSM-1 admin"
+# Prompt for primary admin password
+prompt_password "$PRIMARY_NAME admin"
 ADMIN_PASS="$PASSWORD"
 
 # Create export directory
@@ -28,8 +28,11 @@ for entry in "${EXPORT_OBJECTS[@]}"; do
     IFS=':' read -r obj_id obj_type obj_label <<< "$entry"
     out_file="$EXPORT_DIR/export_${obj_id}.yhw"
 
+    # yubihsm-shell appends to existing files — delete first
+    rm -f "$out_file"
+
     echo "Exporting $obj_label ($obj_id, $obj_type) -> $out_file"
-    hsm_cmd "$HSM1" 2 "$ADMIN_PASS" "get-wrapped" \
+    hsm_cmd "$PRIMARY_HSM" 2 "$ADMIN_PASS" "get-wrapped" \
         --wrap-id "$OBJ_WRAP_KEY" \
         -i "$obj_id" \
         -t "$obj_type" \

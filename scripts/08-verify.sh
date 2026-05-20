@@ -68,7 +68,7 @@ for i in "${!ALL_HSMS[@]}"; do
 
     # Test RSA signature
     RSA_SIG_FILE="/tmp/yubihsm_verify_rsa_$$.sig"
-    if hsm_cmd "$local_url" 3 "$SIGNER_PASS" "sign-pkcs1v1_5" \
+    if hsm_cmd "$local_url" 3 "$SIGNER_PASS" "sign-pkcs1v15" \
         -i "$OBJ_SIGNER_ASYM" \
         -A rsa-pkcs1-sha256 \
         --in "$TEST_FILE" \

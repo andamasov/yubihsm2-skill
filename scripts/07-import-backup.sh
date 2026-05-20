@@ -24,9 +24,9 @@ for f in "${EXPORT_FILES[@]}"; do
 done
 echo "OK: All export files found"
 
-# Import to HSM-2 and HSM-3
-BACKUP_HSMS=("$HSM2" "$HSM3")
-BACKUP_NAMES=("HSM-2" "HSM-3")
+# Import to backup devices (all except HSM-1 primary)
+BACKUP_HSMS=("${ALL_HSMS[@]:1}")
+BACKUP_NAMES=("${HSM_NAMES[@]:1}")
 
 for i in "${!BACKUP_HSMS[@]}"; do
     local_url="${BACKUP_HSMS[$i]}"

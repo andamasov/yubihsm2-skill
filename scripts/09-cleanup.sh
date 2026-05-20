@@ -60,6 +60,7 @@ echo
 echo "Remaining files in certs/:"
 ls -la "$CERTS_DIR/" 2>/dev/null || echo "  (empty or not found)"
 
+
 section "Phase 9 Complete"
 echo "Private keys securely deleted. Public certificates preserved."
 echo

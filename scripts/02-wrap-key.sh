@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 2: Generate shared wrap key and distribute to all 3 devices
+# Phase 2: Generate shared wrap key and distribute to all devices
 source "$(dirname "$0")/common.sh"
 
 preflight
@@ -13,17 +13,17 @@ echo "Generating 32-byte AES-256 wrap key material..."
 openssl rand 32 > "$WRAP_KEY_FILE"
 echo "OK: Wrap key material generated at $WRAP_KEY_FILE"
 
-# Import to all 3 devices
+# Import to all devices
 for i in "${!ALL_HSMS[@]}"; do
-    local_url="${ALL_HSMS[$i]}"
-    local_name="${HSM_NAMES[$i]}"
+    hsm_url="${ALL_HSMS[$i]}"
+    hsm_name="${HSM_NAMES[$i]}"
 
     echo
-    echo "--- Importing wrap key to $local_name ($local_url) ---"
+    echo "--- Importing wrap key to $hsm_name ($hsm_url) ---"
 
-    check_connector "$local_url"
+    check_connector "$hsm_url"
 
-    hsm_default "$local_url" "put-wrap-key" \
+    hsm_default "$hsm_url" "put-wrap-key" \
         -i "$OBJ_WRAP_KEY" \
         --label "shared-wrap" \
         --domains 1 \
@@ -33,10 +33,12 @@ for i in "${!ALL_HSMS[@]}"; do
         --in "$WRAP_KEY_FILE" \
         --informat binary
 
-    echo "OK: Wrap key imported to $local_name"
+    echo "OK: Wrap key imported to $hsm_name"
 done
 
-# Securely delete wrap key material
+# Securely delete wrap key material from disk
+# To add a new device later, use add-device.sh which transfers the wrap key
+# from an existing device using a temporary transport wrap key.
 echo
 echo "Securely deleting wrap key material from disk..."
 if command -v shred &>/dev/null; then
@@ -49,5 +51,7 @@ fi
 echo "OK: Wrap key material deleted"
 
 section "Phase 2 Complete"
-echo "Shared wrap key (ID $OBJ_WRAP_KEY) installed on all 3 devices."
+echo "Shared wrap key (ID $OBJ_WRAP_KEY) installed on ${#ALL_HSMS[@]} devices."
 echo "Wrap key material no longer exists on disk."
+echo
+echo "To add a new device later, use: ./scripts/add-device.sh <connector-url> <name>"
