@@ -7,7 +7,21 @@ description: Use when operating a YubiHSM 2 device — provisioning, key generat
 
 Operate YubiHSM 2 hardware security modules by executing `yubihsm-shell` commands via Bash. This skill executes commands directly — it does not just display them.
 
+**When to use this skill vs. the MCP server (`~/GitHub/yubihsm2-mcp`):** use the MCP server when an LLM client needs a persistent, typed tool surface (chat-based ops over many turns, two-profile auth split). Use this skill for one-off CLI ops, provisioning runs, scripted backups, air-gapped USB-direct work, or any case where shelling out is cheaper than running the MCP daemon. Both wrap the same `yubihsm-shell` semantics.
+
 ## Execution Model
+
+### Transports
+
+`yubihsm-shell --connector` accepts three forms:
+
+| Form | Use when | Example |
+|---|---|---|
+| `https://HOST:PORT` | Remote HSM behind a connector daemon, TLS | `https://10.217.32.192:12345` (HSM-1 default) |
+| `http://HOST:PORT` | Local connector daemon, no TLS | `http://127.0.0.1:12345` |
+| `yhusb://[serial=NNNN]` | Direct USB on this host — **no connector daemon needed** | `yhusb://`, `yhusb://serial=0123456789` |
+
+For HTTPS connectors, also pass `--cacert` with the connector CA cert (at `.claude/yubihsm-connector.crt` relative to the repo root for the default device set). For `http://` and `yhusb://`, no cacert applies.
 
 ### CLI Mode Only
 
@@ -21,13 +35,56 @@ yubihsm-shell \
   -a <action> [flags]
 ```
 
+### Default Device
+
+Unless the user specifies otherwise, all operations target **HSM-1 (primary)** at `https://10.217.32.192:12345`.
+
+The device fleet:
+| Device | Role | Connector URL | Status |
+|---|---|---|---|
+| HSM-1 | Primary (default) | https://10.217.32.192:12345 | Active |
+| HSM-2 | Hot backup | https://10.217.32.191:12345 | Offline — pending physical reset |
+| HSM-3 | Cold backup | https://10.217.72.234:12345 | Active |
+| Local USB | Direct (provisioning, air-gapped ops) | `yhusb://` | Use when the HSM is plugged into this host |
+
 ### Credential Resolution
 
 1. Check env vars: `YUBIHSM_AUTH_KEY_ID`, `YUBIHSM_PASSWORD`, `YUBIHSM_CONNECTOR_URL`
-2. If missing, prompt the user — do NOT assume defaults
-3. `YUBIHSM_CONNECTOR_URL` defaults to `http://127.0.0.1:12345` only if user confirms
+2. If `BW_SESSION` is set and `bw` CLI is available, try fetching from Bitwarden first (see below)
+3. If still missing, prompt the user — do NOT assume defaults
+4. `YUBIHSM_CONNECTOR_URL` defaults to `https://10.217.32.191:12345` (HSM-1) if user confirms
 
 **Never assume auth key ID 1 / password "password" unless the user explicitly states they are using factory defaults.**
+
+### Bitwarden Integration
+
+HSM auth key passwords can be stored in and retrieved from Bitwarden using the `bw` CLI.
+
+**Prerequisites:** `bw` and `jq` in PATH, `BW_SESSION` env var set (`export BW_SESSION=$(bw unlock --raw)`)
+
+**Item naming convention:** One login item per auth key role per device:
+```
+YubiHSM2 HSM-1 admin
+YubiHSM2 HSM-1 signer
+YubiHSM2 HSM-2 admin
+YubiHSM2 HSM-2 signer
+YubiHSM2 HSM-3 admin
+YubiHSM2 HSM-3 signer
+```
+
+**Retrieval:** Password is stored in `login.password`:
+```bash
+bw get item "YubiHSM2 HSM-1 admin" | jq -r '.login.password'
+```
+
+**Generation:** Use `bw generate` with strong defaults:
+```bash
+bw generate -p --length 32 --uppercase --lowercase --number --special
+```
+
+**Provisioning scripts** (`scripts/common.sh`) handle this automatically — `prompt_password` checks Bitwarden first via item name resolution, falls back to interactive prompt if `BW_SESSION` is not set or item is not found.
+
+**Creating items:** Run `scripts/00-generate-passwords.sh` to generate 6 passwords and store them in Bitwarden as separate login items. Requires `BW_SESSION`.
 
 ### Pre-Flight Checks (MANDATORY)
 
@@ -37,18 +94,36 @@ Run these before EVERY workflow. Do not skip them.
 # 1. Binary exists
 which yubihsm-shell
 
-# 2. Connector reachable
-curl -sf "$YUBIHSM_CONNECTOR_URL/connector/status"
-# Must contain: status=OK
+# 2. Device reachable — branch on transport
+case "$YUBIHSM_CONNECTOR_URL" in
+  http://*|https://*)
+    # Connector daemon — HTTP probe (add --cacert path for https://)
+    curl -sf "$YUBIHSM_CONNECTOR_URL/connector/status"
+    # Must contain: status=OK
+    ;;
+  yhusb://*)
+    # Direct USB — verify the device is enumerated
+    if [ "$(uname -s)" = "Linux" ]; then
+      lsusb -d 1050:0030
+    else
+      system_profiler SPUSBDataType | grep -A2 -i yubihsm
+    fi
+    ;;
+esac
+
+# 3. Authenticated session works (any transport)
+yubihsm-shell --connector "$YUBIHSM_CONNECTOR_URL" \
+  --authkey "$YUBIHSM_AUTH_KEY_ID" -p "$YUBIHSM_PASSWORD" \
+  -a get-device-info
 ```
 
-If either fails, stop and report. Do not proceed with HSM commands.
+If any step fails, stop and report. Do not proceed with HSM commands.
 
 ### Risk Classification
 
 | Level | Operations | Rule |
 |---|---|---|
-| Read-only | list-objects, get-device-info, get-storage-info, get-log-entries, get-pubkey, get-object-info | Execute without confirmation |
+| Read-only | list-objects, get-device-info, get-storage-info, get-logs, get-public-key, get-object-info | Execute without confirmation |
 | Mutating | generate-*, put-*, sign-*, encrypt-*, decrypt-*, set-option, change-authkey | Describe what will happen, get one confirmation |
 | Destructive | delete-*, reset-device | Warn irreversibility, get explicit confirmation |
 
@@ -56,71 +131,13 @@ If either fails, stop and report. Do not proceed with HSM commands.
 
 **"I'm in a hurry" is not a reason to skip confirmations.** Destructive HSM operations are irreversible. Always confirm.
 
-## Concepts Primer
+## Concepts
 
-**Objects:** All persistent data in the HSM. 9 types: authentication-key, asymmetric-key, symmetric-key, wrap-key, hmac-key, opaque, template, otp-aead-key, public-wrap-key. Identified by (Type, ID) pair. Max 256 objects, 126 KB total. IDs 0x0000 and 0xFFFF are reserved; use 0 for auto-assign.
+Object types, sessions, domains, capabilities, delegated capabilities, algorithms, audit log semantics — all in **`concepts-ref.md`**. Read it before designing access control or constructing capability strings.
 
-**Sessions:** All operations require an authenticated session. Opened with an authentication key. Max 16 concurrent, 30-second inactivity timeout. CLI mode (`-a`) handles session open/close automatically per invocation.
+## One-time host setup
 
-**Domains:** 16 logical partitions (1-16). Objects belong to one or more domains. An auth key can only access objects sharing at least one domain. Use domains to isolate applications or roles.
-
-**Capabilities:** 64-bit flags controlling permitted operations. Both the auth key AND target object must possess the required capability. Example: to sign with ECDSA, the auth key needs `sign-ecdsa` and the asymmetric key also needs `sign-ecdsa`.
-
-**Delegated Capabilities:** Only on auth keys and wrap keys. Upper bound on capabilities assignable to newly created or imported objects. If you create a key via an auth key, the new key's capabilities cannot exceed the auth key's delegated capabilities.
-
-**Algorithms:** Specify crypto operations. See `capabilities-ref.md` for the full list. Common: `ecp256`, `ecp384`, `ed25519`, `rsa2048`, `rsa4096`, `aes256-ccm-wrap`, `hmac-sha256`.
-
-**All object types are exportable under wrap** — including authentication keys. Auth keys CAN be backed up via wrap keys. Do not skip them during backup.
-
-## Connector Setup
-
-```bash
-# Detect OS
-uname -s  # Linux or Darwin
-
-# Linux (Debian/Ubuntu)
-sudo dpkg -i ./libyubihsm-usb1_*.deb ./libyubihsm-http1_*.deb \
-  ./libyubihsm1_*.deb ./yubihsm-shell_*.deb ./yubihsm-connector_*.deb
-
-# Linux (RHEL/CentOS)
-sudo yum install ./yubihsm-shell-*.rpm ./yubihsm-connector-*.rpm
-
-# macOS — install from SDK download
-```
-
-### udev Rules (Linux)
-
-```bash
-sudo tee /etc/udev/rules.d/99-yubihsm2.rules << 'EOF'
-ACTION!="add|change", GOTO="yubihsm2_end"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1050", ATTRS{idProduct}=="0030", OWNER="yubihsm-connector"
-LABEL="yubihsm2_end"
-EOF
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
-
-### Connector Configuration
-
-Config file: `/etc/yubihsm-connector.yaml`
-
-```yaml
-listen: localhost:12345    # Change for network access
-serial: ""                 # Specify if multiple devices
-syslog: false
-```
-
-### Start and Verify
-
-```bash
-# systemd
-sudo systemctl enable --now yubihsm-connector
-
-# or direct
-yubihsm-connector -d
-
-# verify
-curl -sf http://127.0.0.1:12345/connector/status
-```
+SDK install (Linux/macOS), udev rules, connector daemon config, direct-USB enumeration check — all in **`setup-ref.md`**. Read it only when bootstrapping a new host. Routine operations do not need it.
 
 ## Workflows
 
@@ -193,7 +210,7 @@ curl -sf http://127.0.0.1:12345/connector/status
    yubihsm-shell ... -a sign-eddsa -i "$OBJ_ID" --in "$DATA_FILE" --out "$SIG_FILE"
 
    # RSA PKCS#1 v1.5
-   yubihsm-shell ... -a sign-pkcs1v1_5 -i "$OBJ_ID" -A rsa-pkcs1-sha256 --in "$DATA_FILE" --out "$SIG_FILE"
+   yubihsm-shell ... -a sign-pkcs1v15 -i "$OBJ_ID" -A rsa-pkcs1-sha256 --in "$DATA_FILE" --out "$SIG_FILE"
 
    # RSA-PSS
    yubihsm-shell ... -a sign-pss -i "$OBJ_ID" -A rsa-pss-sha256 --in "$DATA_FILE" --out "$SIG_FILE"
@@ -204,7 +221,7 @@ curl -sf http://127.0.0.1:12345/connector/status
 4. Extract public key for verification:
    ```bash
    yubihsm-shell --connector "$URL" --authkey "$KEY_ID" -p "$PASS" \
-     -a get-pubkey -i "$OBJ_ID" --out "$PUBKEY_FILE"
+     -a get-public-key -i "$OBJ_ID" --out "$PUBKEY_FILE"
    ```
 5. Provide OpenSSL verification command:
    ```bash
@@ -219,7 +236,7 @@ yubihsm-shell --connector "$URL" --authkey "$KEY_ID" -p "$PASS" \
   -a decrypt-oaep -i "$OBJ_ID" -A rsa-oaep-sha256 --in "$ENC_FILE" --out "$DEC_FILE"
 
 # RSA-PKCS1v1.5 decrypt
-yubihsm-shell ... -a decrypt-pkcs1v1_5 -i "$OBJ_ID" --in "$ENC_FILE" --out "$DEC_FILE"
+yubihsm-shell ... -a decrypt-pkcs1v15 -i "$OBJ_ID" --in "$ENC_FILE" --out "$DEC_FILE"
 
 # AES-CBC encrypt (firmware 2.3.1+)
 yubihsm-shell ... -a encrypt-aes-cbc -i "$OBJ_ID" --iv "$IV_HEX" --in "$PLAIN_FILE" --out "$ENC_FILE"
@@ -296,7 +313,7 @@ yubihsm-shell ... -a encrypt-aes-ecb / decrypt-aes-ecb ...
 5. Execute:
    ```bash
    yubihsm-shell --connector "$URL" --authkey "$KEY_ID" -p "$PASS" \
-     -a reset-device
+     -a reset
    ```
    Alternative: physical reset by holding touch sensor for 10+ seconds while inserting device.
 6. Verify: open session with default auth key (ID 1, password "password")
@@ -321,10 +338,20 @@ yubihsm-shell ... -a encrypt-aes-ecb / decrypt-aes-ecb ...
 
 ```bash
 yubihsm-shell --connector "$URL" --authkey "$KEY_ID" -p "$PASS" \
-  -a get-log-entries
+  -a get-logs
 ```
 
 Log store holds 62 entries in circular buffer. If force-audit is enabled and log is full, all operations except session open and log retrieval are blocked.
+
+## Known Quirks (yubihsm-shell 2.7.0)
+
+**`--out` appends, does not overwrite.** If the output file already exists, data is appended, producing a corrupt file. Always `rm -f` the output file before writing.
+
+**Action names differ from capability names.** Examples: action `reset` vs capability `reset-device`; action `sign-pkcs1v15` vs capability `sign-pkcs`; action `get-public-key` vs capability (none — always allowed); action `get-logs` vs capability `get-log-entries`.
+
+**`list-objects`, `get-object-info`, `get-public-key` require no capabilities.** These are always allowed for any authenticated session. Do not include them in capability strings — yubihsm-shell will reject them as invalid.
+
+**`opaque-x509-certificate` requires DER format.** PEM certificates must be converted before import: `openssl x509 -in cert.pem -outform DER -out cert.der`
 
 ## Error Handling
 
@@ -340,5 +367,7 @@ Log store holds 62 entries in circular buffer. If force-audit is enabled and log
 
 ## Reference Files
 
+- **`concepts-ref.md`** — objects, sessions, domains, capabilities, delegated capabilities, algorithms, audit log. Read before designing access control.
+- **`setup-ref.md`** — one-time host setup: SDK install, udev rules, connector daemon config, USB enumeration check. Read only when bootstrapping a new host.
 - **`command-reference.md`** — full syntax for every yubihsm-shell command. Read when you need exact flags for a command not covered above.
-- **`capabilities-ref.md`** — complete capabilities, algorithms, and domains tables. Read when constructing capability strings or planning access control.
+- **`capabilities-ref.md`** — complete capabilities, algorithms, and domains tables. Read when constructing capability strings.
