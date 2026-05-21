@@ -6,9 +6,13 @@ Claude Code skill and provisioning scripts for YubiHSM 2 operations.
 
 ```
 skills/yubihsm2/          # Claude Code skill (symlink to ~/.claude/skills/yubihsm2)
-  SKILL.md                # Main skill — execution model, workflows, Bitwarden integration
+  SKILL.md                # Main skill — execution model, transports (https/http/yhusb), workflows
+  concepts-ref.md         # Objects, sessions, domains, capabilities, audit log
+  setup-ref.md            # One-time host setup: SDK install, udev, connector daemon, USB enum
   command-reference.md    # Full yubihsm-shell command syntax
   capabilities-ref.md     # Capabilities, algorithms, domains tables
+docs/                     # Operator documentation
+  RECOVERY.md             # Device recovery from Bitwarden-backed wrap-key chain + log drain
 scripts/                  # Provisioning scripts
   common.sh               # Device config, object IDs, capabilities, helpers
   00-generate-passwords.sh # Generate and store passwords in Bitwarden
@@ -51,8 +55,12 @@ for f in scripts/*.sh; do bash -n "$f" && echo "$f: OK"; done
 
 ## Key Conventions
 
-- All connectors use HTTPS with CA cert at `.claude/yubihsm-connector.crt`
+- All connectors use HTTPS with CA cert at `.claude/yubihsm-connector.crt`; the local Mac may also use `yhusb://` direct or a localhost connector at `http://127.0.0.1:12345` (see [docs/RECOVERY.md](docs/RECOVERY.md) for transport context)
 - Passwords stored in Bitwarden: `YubiHSM2 <device-name> admin|signer`
+- Wrap-key backup chain in Bitwarden (reprompt-protected secure notes with file attachments):
+  - `YubiHSM2 transport-wrap key material (<date>)` — top-of-tree AES-256 wrap key
+  - `YubiHSM2 shared-wrap key (wrapped, <date>)` — shared-wrap encrypted by transport-wrap
+  - Restore procedure in [docs/RECOVERY.md](docs/RECOVERY.md); needs BOTH items.
 - FIPS activation changes default key password from "password" to "password2"
 - yubihsm-shell `--out` flag APPENDS — always `rm -f` before writing
 - Certificates for `put-opaque` with `opaque-x509-certificate` must be DER format
