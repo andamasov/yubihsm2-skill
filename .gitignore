@@ -6,3 +6,9 @@ exports/
 *.yhw
 *.sig
 *.key
+
+# Claude Code personal/local state
+.claude/settings.local.json
+
+# Yubico SDK installer — re-downloadable from Yubico, do not track
+yubihsm2-sdk-*.pkg
