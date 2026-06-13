@@ -10,16 +10,18 @@ set -euo pipefail
 #
 # Slots:
 #   HSM-1 (primary)  = https://10.217.32.192:12345
-#   HSM-2 (offline)  = https://10.217.32.191:12345 — pending physical reset
+#   HSM-2 (backup)   = https://10.217.32.191:12345 — provisioned 2026-06-13
 #   HSM-3 (backup)   = https://10.217.72.234:12345
 #   HSM-4 (reserved) = not yet assigned
 #
 ALL_HSMS=(
     "https://10.217.32.192:12345"   # HSM-1 primary
+    "https://10.217.32.191:12345"   # HSM-2 backup
     "https://10.217.72.234:12345"   # HSM-3 backup
 )
 HSM_NAMES=(
     "HSM-1"
+    "HSM-2"
     "HSM-3"
 )
 
